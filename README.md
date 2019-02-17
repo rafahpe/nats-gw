@@ -4,24 +4,6 @@ A simple HTTP gateway for [NATS](https://github.com/nats-io). Useful for webhook
 
 Currently, it only supports TLS nats servers with a valid public key, and username/pass authentication.
 
-Besides, the request body must contain only strings. I.e this works:
-
-```json
-{
-    "key1": "val1",
-    "key2": "100"
-}
-```
-
-But this doesn't:
-
-```json
-{
-    "key1": "val1",
-    "key2": 100
-}
-```
-
 ## Usage
 
 Start one instance in server mode:

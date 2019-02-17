@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,7 +19,7 @@ import (
 )
 
 // MaxRequestSize is the maximum size of the POST body
-const MaxRequestSize = 8192
+const MaxRequestSize = 16384
 
 type config struct {
 	User string
@@ -31,7 +30,7 @@ type config struct {
 }
 
 type publisher interface {
-	Publish(subject string, v interface{}) error
+	Publish(subject string, v []byte) error
 }
 
 // Naive HTTP => NATS gateway
@@ -47,15 +46,10 @@ func main() {
 		log.Fatal("Error connecting to server: ", err)
 	}
 	defer nc.Close()
-	ec, err := nats.NewEncodedConn(nc, nats.JSON_ENCODER)
-	if err != nil {
-		log.Fatal("Error setting JSON encoder: ", err)
-	}
-	defer ec.Close()
 	if cfg.Test != "" {
 		log.Printf("Running in test mode, subscribing to topic %s", cfg.Test)
-		s, err := ec.Subscribe(cfg.Test, func(req map[string]string) {
-			log.Printf("Received message %+v", req)
+		s, err := nc.Subscribe(cfg.Test, func(msg *nats.Msg) {
+			log.Printf("Received message [%s] %s", msg.Subject, string(msg.Data))
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -63,7 +57,7 @@ func main() {
 		defer s.Unsubscribe()
 		log.Fatal(waitForInterrupt())
 	}
-	addRoutes(ec)
+	addRoutes(nc)
 	log.Print("Waiting for requests on port 8080, URL /topics/{topic}")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
@@ -116,13 +110,12 @@ func topic(p publisher, w http.ResponseWriter, r *http.Request) (int, error) {
 		return http.StatusNotAcceptable, errors.New("missing topic body")
 	}
 	// Check content
-	message := make(map[string]string)
-	decoder := json.NewDecoder(io.LimitReader(r.Body, MaxRequestSize))
-	if err := decoder.Decode(&message); err != nil {
+	data, err := ioutil.ReadAll(io.LimitReader(r.Body, MaxRequestSize))
+	if err != nil {
 		return http.StatusBadRequest, err
 	}
 	// Publish the message to the topic
-	if err := p.Publish(topic, message); err != nil {
+	if err := p.Publish(topic, data); err != nil {
 		return http.StatusInternalServerError, err
 	}
 	return http.StatusNoContent, nil
