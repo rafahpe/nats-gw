@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
@@ -27,10 +28,6 @@ type config struct {
 	Host string
 	Port int
 	Test string
-}
-
-type publisher interface {
-	Publish(subject string, v []byte) error
 }
 
 // Naive HTTP => NATS gateway
@@ -50,6 +47,12 @@ func main() {
 		log.Printf("Running in test mode, subscribing to topic %s", cfg.Test)
 		s, err := nc.Subscribe(cfg.Test, func(msg *nats.Msg) {
 			log.Printf("Received message [%s] %s", msg.Subject, string(msg.Data))
+			if msg.Reply != "" {
+				reply := []byte(fmt.Sprintf("{ \"pong\": %s }", string(msg.Data)))
+				if err := nc.Publish(msg.Reply, reply); err != nil {
+					log.Printf("Error replying to message [%s]: %+v", msg.Subject, err)
+				}
+			}
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -58,7 +61,7 @@ func main() {
 		log.Fatal(waitForInterrupt())
 	}
 	addRoutes(nc)
-	log.Print("Waiting for requests on port 8080, URL /topics/{topic}")
+	log.Print("Waiting for requests on port 8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
@@ -77,21 +80,38 @@ func waitForInterrupt() error {
 	return fmt.Errorf("Signal received: %+v", result)
 }
 
-func addRoutes(p publisher) {
+// addRoutes adds the /topics and /requests routes
+func addRoutes(p *nats.Conn) {
 	r := mux.NewRouter()
 	r.Methods("POST").Path("/topics/{topic}").Headers("Content-Type", "application/json").Handler(
-		handlers.LoggingHandler(os.Stdout, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			code, err := topic(p, w, r)
-			w.WriteHeader(code)
-			if err != nil {
-				log.Print("NATS Error: ", err)
-				w.Write([]byte(err.Error()))
-			}
-		})))
+		handlers.LoggingHandler(os.Stdout, handler(p, topic)))
+	r.Methods("POST").Path("/requests/{topic}").Headers("Content-Type", "application/json").Handler(
+		handlers.LoggingHandler(os.Stdout, handler(p, request)))
 	http.Handle("/", r)
 }
 
-func topic(p publisher, w http.ResponseWriter, r *http.Request) (int, error) {
+// forPublisher creates a http.Handler for the given publisher
+func handler(pub *nats.Conn, f func(pub *nats.Conn, topic string, data []byte) (response []byte, status int, err error)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		topic, data, code, err := decode(r)
+		if err == nil {
+			data, code, err = f(pub, topic, data)
+		}
+		if data != nil {
+			w.Header().Add("Content-Type", "application/json")
+		}
+		w.WriteHeader(code)
+		if err != nil {
+			log.Print("NATS Error: ", err)
+			w.Write([]byte(err.Error()))
+		} else {
+			w.Write(data)
+		}
+	})
+}
+
+// decode the request body, get the topic and message
+func decode(r *http.Request) (topic string, data []byte, status int, err error) {
 	// Always read the body to completion, and close it, before leaving
 	if r.Body != nil {
 		defer func() {
@@ -101,24 +121,38 @@ func topic(p publisher, w http.ResponseWriter, r *http.Request) (int, error) {
 	}
 	// Get topic from URL
 	pvars := mux.Vars(r)
-	topic, ok := pvars["topic"]
+	var ok bool
+	topic, ok = pvars["topic"]
 	if !ok || topic == "" {
-		return http.StatusNotFound, errors.New("Missing topic")
+		return "", nil, http.StatusNotFound, errors.New("Missing topic")
 	}
 	// Check if there is a message body
 	if r.Body == nil {
-		return http.StatusNotAcceptable, errors.New("missing topic body")
+		return "", nil, http.StatusNotAcceptable, errors.New("missing topic body")
 	}
 	// Check content
-	data, err := ioutil.ReadAll(io.LimitReader(r.Body, MaxRequestSize))
+	data, err = ioutil.ReadAll(io.LimitReader(r.Body, MaxRequestSize))
 	if err != nil {
-		return http.StatusBadRequest, err
+		return "", nil, http.StatusBadRequest, err
 	}
-	// Publish the message to the topic
-	if err := p.Publish(topic, data); err != nil {
-		return http.StatusInternalServerError, err
+	return topic, data, http.StatusOK, nil
+}
+
+// Topic handler
+func topic(pub *nats.Conn, topic string, data []byte) (response []byte, status int, err error) {
+	if err := pub.Publish(topic, data); err != nil {
+		return nil, http.StatusInternalServerError, err
 	}
-	return http.StatusNoContent, nil
+	return nil, http.StatusNoContent, nil
+}
+
+// Request handler
+func request(pub *nats.Conn, topic string, data []byte) (response []byte, status int, err error) {
+	msg, err := pub.Request(topic, data, 1*time.Second)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+	return msg.Data, http.StatusOK, nil
 }
 
 // read config from command line / environment
