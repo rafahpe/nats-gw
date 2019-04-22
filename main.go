@@ -148,7 +148,7 @@ func topic(pub *nats.Conn, topic string, data []byte) (response []byte, status i
 
 // Request handler
 func request(pub *nats.Conn, topic string, data []byte) (response []byte, status int, err error) {
-	msg, err := pub.Request(topic, data, 1*time.Second)
+	msg, err := pub.Request(topic, data, 4*time.Second)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
