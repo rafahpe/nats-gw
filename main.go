@@ -48,7 +48,8 @@ func main() {
 		s, err := nc.Subscribe(cfg.Test, func(msg *nats.Msg) {
 			log.Printf("Received message [%s] %s", msg.Subject, string(msg.Data))
 			if msg.Reply != "" {
-				reply := []byte(fmt.Sprintf("{ \"pong\": %s }", string(msg.Data)))
+				log.Printf("Message [%s] requested reply to %s", msg.Subject, string(msg.Data))
+				reply := []byte(fmt.Sprintf("{ \"fulfillmentText\": \"mensaje recibido\", \"payload\": { \"google\": { \"expectUserResponse\": false } } }"))
 				if err := nc.Publish(msg.Reply, reply); err != nil {
 					log.Printf("Error replying to message [%s]: %+v", msg.Subject, err)
 				}
@@ -83,9 +84,9 @@ func waitForInterrupt() error {
 // addRoutes adds the /topics and /requests routes
 func addRoutes(p *nats.Conn) {
 	r := mux.NewRouter()
-	r.Methods("POST").Path("/topics/{topic}").Headers("Content-Type", "application/json").Handler(
+	r.Methods("POST").Path("/topics/{topic}").Handler(
 		handlers.LoggingHandler(os.Stdout, handler(p, topic)))
-	r.Methods("POST").Path("/requests/{topic}").Headers("Content-Type", "application/json").Handler(
+	r.Methods("POST").Path("/requests/{topic}").Handler(
 		handlers.LoggingHandler(os.Stdout, handler(p, request)))
 	http.Handle("/", r)
 }
