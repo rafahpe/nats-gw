@@ -99,7 +99,7 @@ func handler(pub *nats.Conn, f func(pub *nats.Conn, topic string, data []byte) (
 			data, code, err = f(pub, topic, data)
 		}
 		if data != nil {
-			w.Header().Add("Content-Type", "application/json")
+			w.Header().Add("Content-Type", "application/json; charset=utf-8")
 		}
 		w.WriteHeader(code)
 		if err != nil {
